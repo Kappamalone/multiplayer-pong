@@ -9,8 +9,9 @@ const PADDLE_MOVE_SPEED: f32 = 15.;
 const PADDLE_WIDTH: f32 = 50.;
 const PADDLE_HEIGHT: f32 = 150.;
 const BALL_RADIUS: f32 = 15.;
-const BALL_SPEED: f32 = 15.;
+const BALL_SPEED: f32 = 30.;
 const FONT_SIZE: f32 = 50.;
+const POINTS_TO_WIN: usize = 3;
 
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
 enum GameState {
@@ -21,9 +22,6 @@ enum GameState {
     GameOver,
 }
 
-#[derive(Resource)]
-pub struct Score((usize, usize));
-
 // from the unofficial bevy cheat book
 mod cleanup {
     use bevy::prelude::*;
@@ -32,8 +30,13 @@ mod cleanup {
     #[derive(Component)]
     pub struct InGameCleanup;
     #[derive(Component)]
-    pub struct ToMenuCleanup;
+    pub struct GameOverCleanup;
+    #[derive(Component)]
+    pub struct MenuToInGameCleanup;
 }
+
+#[derive(Resource)]
+pub struct Score((usize, usize));
 
 fn cleanup_system<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
     for entity in q {
@@ -72,6 +75,7 @@ mod menu {
             cleanup::MenuCleanup,
         ));
     }
+
     pub fn handle_input(
         buttons: Res<ButtonInput<MouseButton>>,
         mut next_state: ResMut<NextState<GameState>>,
@@ -82,7 +86,7 @@ mod menu {
     }
 }
 
-mod in_game {
+mod ingame {
     use crate::*;
 
     enum PaddleSide {
@@ -187,16 +191,14 @@ mod in_game {
         if transform.translation.x + BALL_RADIUS >= (window.width() / 2.) {
             next_state.set(GameState::PointScored);
             score.0.0 += 1;
-            println!("{} vs {}", score.0.0, score.0.1);
-            if score.0.0 == 3 {
+            if score.0.0 == POINTS_TO_WIN {
                 next_state.set(GameState::GameOver);
             }
         }
         if transform.translation.x - BALL_RADIUS <= -(window.width() / 2.) {
             next_state.set(GameState::PointScored);
             score.0.1 += 1;
-            println!("{} vs {}", score.0.0, score.0.1);
-            if score.0.1 == 3 {
+            if score.0.1 == POINTS_TO_WIN {
                 next_state.set(GameState::GameOver);
             }
         }
@@ -256,12 +258,87 @@ mod point_scored {
     }
 }
 
+mod game_over {
+    use crate::*;
+    pub fn spawn(mut commands: Commands, asset_server: Res<AssetServer>, score: Res<Score>) {
+        // NOTE: should probably have a resource for this in a bigger project
+        let font = asset_server.load("fonts/FiraSans-Bold.ttf");
+        let text_font = TextFont {
+            font: font.clone(),
+            font_size: FONT_SIZE,
+            ..default()
+        };
+
+        let game_over_text = if score.0.0 == POINTS_TO_WIN {
+            Text2d::new("Player 1 won")
+        } else {
+            Text2d::new("Player 2 won")
+        };
+
+        commands.spawn((
+            game_over_text,
+            text_font.clone(),
+            TextLayout::new_with_justify(JustifyText::Center),
+            Transform::from_translation(Vec3::new(0., 0., 0.)),
+            cleanup::GameOverCleanup,
+        ));
+    }
+    pub fn handle_input(
+        buttons: Res<ButtonInput<MouseButton>>,
+        mut next_state: ResMut<NextState<GameState>>,
+    ) {
+        if buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right) {
+            next_state.set(GameState::Menu);
+        }
+    }
+}
+
+mod menu_to_ingame {
+    use crate::*;
+
+    #[derive(Component)]
+    pub struct CurrScore(Score);
+
+    pub fn spawn(
+        mut commands: Commands,
+        asset_server: Res<AssetServer>,
+        window_query: Query<&Window>,
+    ) {
+        let window = window_query.iter().nth(0).unwrap();
+
+        let font = asset_server.load("fonts/FiraSans-Bold.ttf");
+        let text_font = TextFont {
+            font: font.clone(),
+            font_size: FONT_SIZE,
+            ..default()
+        };
+
+        commands.insert_resource(Score((0, 0)));
+        commands.spawn((
+            CurrScore(Score((0, 0))),
+            Text2d::new("0 - 0"),
+            text_font.clone(),
+            TextLayout::new_with_justify(JustifyText::Center),
+            Transform::from_translation(Vec3::new(0., window.height() / 2.5, 0.)),
+            cleanup::MenuToInGameCleanup,
+        ));
+    }
+
+    pub fn update(score: Res<Score>, mut query: Query<(&mut CurrScore, &mut Text2d)>) {
+        let (mut curr_score, mut score_text) = query.iter_mut().nth(0).unwrap();
+        if score.0 != curr_score.0.0 {
+            curr_score.0.0 = score.0;
+            *score_text = Text2d::new(format!("{} - {}", curr_score.0.0.0, curr_score.0.0.1))
+        }
+    }
+}
+
 #[derive(Resource)]
 struct DebugTimer(Timer);
 fn debug(
     time: Res<Time>,
     mut timer: ResMut<DebugTimer>,
-    query: Query<(&in_game::Paddle, &Transform)>,
+    query: Query<(&ingame::Paddle, &Transform)>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
         for (_, transform) in query {
@@ -280,7 +357,6 @@ fn main() {
         .init_state::<GameState>()
         .add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Camera2d);
-            commands.insert_resource(Score((0, 0)));
         })
         .add_systems(OnEnter(GameState::Menu), menu::spawn)
         .add_systems(
@@ -291,13 +367,13 @@ fn main() {
             OnExit(GameState::Menu),
             cleanup_system::<cleanup::MenuCleanup>,
         )
-        .add_systems(OnEnter(GameState::InGame), in_game::spawn)
+        .add_systems(OnEnter(GameState::InGame), ingame::spawn)
         .add_systems(
             Update,
             (
-                in_game::handle_input,
-                in_game::move_ball,
-                in_game::handle_collision,
+                ingame::handle_input,
+                ingame::move_ball,
+                ingame::handle_collision,
             )
                 .run_if(in_state(GameState::InGame)),
         )
@@ -309,6 +385,33 @@ fn main() {
         .add_systems(
             Update,
             (point_scored::wait).run_if(in_state(GameState::PointScored)),
+        )
+        .add_systems(OnEnter(GameState::GameOver), game_over::spawn)
+        .add_systems(
+            Update,
+            (game_over::handle_input).run_if(in_state(GameState::GameOver)),
+        )
+        .add_systems(
+            OnExit(GameState::GameOver),
+            cleanup_system::<cleanup::GameOverCleanup>,
+        )
+        .add_systems(
+            OnTransition {
+                exited: GameState::Menu,
+                entered: GameState::InGame,
+            },
+            menu_to_ingame::spawn,
+        )
+        .add_systems(
+            Update,
+            (menu_to_ingame::update).run_if(in_state(GameState::PointScored)),
+        )
+        .add_systems(
+            OnTransition {
+                exited: GameState::InGame,
+                entered: GameState::GameOver,
+            },
+            cleanup_system::<cleanup::MenuToInGameCleanup>,
         )
         .add_systems(Update, debug)
         .run();
