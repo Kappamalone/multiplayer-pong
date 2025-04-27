@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use bevy::{
-    color::palettes::css::{BLACK, WHITE},
-    prelude::*,
-};
+use bevy::{color::palettes::css::WHITE, prelude::*};
+
+// General critique of my code:
+// - should've used bounding boxes for 2D collisions
+// - should've used events for communication between game loop and score text
 
 const PADDLE_MOVE_SPEED: f32 = 15.;
 const PADDLE_WIDTH: f32 = 50.;
@@ -51,7 +52,7 @@ mod menu {
         asset_server: Res<AssetServer>,
         window_query: Query<&Window>,
     ) {
-        let window = window_query.iter().nth(0).unwrap();
+        let window = window_query.single().unwrap();
         let font = asset_server.load("fonts/FiraSans-Bold.ttf");
         let text_font = TextFont {
             font: font.clone(),
@@ -89,6 +90,7 @@ mod menu {
 mod ingame {
     use crate::*;
 
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum PaddleSide {
         Left,
         Right,
@@ -98,31 +100,31 @@ mod ingame {
     pub struct Paddle(PaddleSide);
 
     #[derive(Component)]
-    pub struct Ball(Vec3);
+    pub struct BallDirection(Vec3);
 
     pub fn spawn(
         mut commands: Commands,
         mut meshes: ResMut<Assets<Mesh>>,
         mut materials: ResMut<Assets<ColorMaterial>>,
     ) {
-        commands.spawn((
-            Paddle(PaddleSide::Left),
-            Mesh2d(meshes.add(Rectangle::new(PADDLE_WIDTH, PADDLE_HEIGHT))),
-            MeshMaterial2d(materials.add(Color::from(WHITE))),
-            Transform::from_translation(Vec3::new(-600., 0., 0.)),
-            cleanup::InGameCleanup,
-        ));
+        [PaddleSide::Left, PaddleSide::Right]
+            .into_iter()
+            .for_each(|side| {
+                commands.spawn((
+                    Paddle(side),
+                    Mesh2d(meshes.add(Rectangle::new(PADDLE_WIDTH, PADDLE_HEIGHT))),
+                    MeshMaterial2d(materials.add(Color::from(WHITE))),
+                    Transform::from_translation(Vec3::new(
+                        (if side == PaddleSide::Left { -1. } else { 1. }) * 600.,
+                        0.,
+                        0.,
+                    )),
+                    cleanup::InGameCleanup,
+                ));
+            });
 
         commands.spawn((
-            Paddle(PaddleSide::Right),
-            Mesh2d(meshes.add(Rectangle::new(PADDLE_WIDTH, PADDLE_HEIGHT))),
-            MeshMaterial2d(materials.add(Color::from(WHITE))),
-            Transform::from_translation(Vec3::new(600., 0., 0.)),
-            cleanup::InGameCleanup,
-        ));
-
-        commands.spawn((
-            Ball(Vec3::new(-1., 1., 0.).normalize()),
+            BallDirection(Vec3::new(-1., 1., 0.).normalize()),
             Mesh2d(meshes.add(Circle::new(BALL_RADIUS))),
             MeshMaterial2d(materials.add(Color::from(WHITE))),
             Transform::from_translation(Vec3::new(0., 0., 0.)),
@@ -135,7 +137,7 @@ mod ingame {
         mut query: Query<(&Paddle, &mut Transform)>,
         window_query: Query<&Window>,
     ) {
-        let window = window_query.iter().nth(0).unwrap();
+        let window = window_query.single().unwrap();
         for (side, mut transform) in &mut query {
             let mut direction = Vec3::ZERO;
 
@@ -176,11 +178,11 @@ mod ingame {
     pub fn move_ball(
         mut score: ResMut<Score>,
         mut next_state: ResMut<NextState<GameState>>,
-        mut query: Query<(&mut Ball, &mut Transform)>,
+        mut query: Query<(&mut BallDirection, &mut Transform)>,
         window_query: Query<&Window>,
     ) {
-        let window = window_query.iter().nth(0).unwrap();
-        let (mut direction, mut transform) = query.iter_mut().nth(0).unwrap();
+        let window = window_query.single().unwrap();
+        let (mut direction, mut transform) = query.single_mut().unwrap();
 
         if transform.translation.y + BALL_RADIUS >= (window.height() / 2.) {
             direction.0.y = -1.;
@@ -190,15 +192,15 @@ mod ingame {
         }
         if transform.translation.x + BALL_RADIUS >= (window.width() / 2.) {
             next_state.set(GameState::PointScored);
-            score.0.0 += 1;
-            if score.0.0 == POINTS_TO_WIN {
+            score.0 .0 += 1;
+            if score.0 .0 == POINTS_TO_WIN {
                 next_state.set(GameState::GameOver);
             }
         }
         if transform.translation.x - BALL_RADIUS <= -(window.width() / 2.) {
             next_state.set(GameState::PointScored);
-            score.0.1 += 1;
-            if score.0.1 == POINTS_TO_WIN {
+            score.0 .1 += 1;
+            if score.0 .1 == POINTS_TO_WIN {
                 next_state.set(GameState::GameOver);
             }
         }
@@ -207,9 +209,9 @@ mod ingame {
 
     pub fn handle_collision(
         paddles_query: Query<(&Paddle, &Transform)>,
-        mut ball_query: Query<(&mut Ball, &Transform)>,
+        mut ball_query: Query<(&mut BallDirection, &Transform)>,
     ) {
-        let (mut ball_direction, ball_transform) = ball_query.iter_mut().nth(0).unwrap();
+        let (mut ball_direction, ball_transform) = ball_query.single_mut().unwrap();
         for (paddle_side, paddle_transform) in paddles_query {
             if ball_transform.translation.y + BALL_RADIUS
                 <= paddle_transform.translation.y + PADDLE_HEIGHT
@@ -269,7 +271,7 @@ mod game_over {
             ..default()
         };
 
-        let game_over_text = if score.0.0 == POINTS_TO_WIN {
+        let game_over_text = if score.0 .0 == POINTS_TO_WIN {
             Text2d::new("Player 1 won")
         } else {
             Text2d::new("Player 2 won")
@@ -304,7 +306,7 @@ mod menu_to_ingame {
         asset_server: Res<AssetServer>,
         window_query: Query<&Window>,
     ) {
-        let window = window_query.iter().nth(0).unwrap();
+        let window = window_query.single().unwrap();
 
         let font = asset_server.load("fonts/FiraSans-Bold.ttf");
         let text_font = TextFont {
@@ -324,11 +326,12 @@ mod menu_to_ingame {
         ));
     }
 
+    // NOTE: this should be using events
     pub fn update(score: Res<Score>, mut query: Query<(&mut CurrScore, &mut Text2d)>) {
-        let (mut curr_score, mut score_text) = query.iter_mut().nth(0).unwrap();
-        if score.0 != curr_score.0.0 {
-            curr_score.0.0 = score.0;
-            *score_text = Text2d::new(format!("{} - {}", curr_score.0.0.0, curr_score.0.0.1))
+        let (mut curr_score, mut score_text) = query.single_mut().unwrap();
+        if score.0 != curr_score.0 .0 {
+            curr_score.0 .0 = score.0;
+            *score_text = Text2d::new(format!("{} - {}", curr_score.0 .0 .0, curr_score.0 .0 .1))
         }
     }
 }
